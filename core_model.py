@@ -20,9 +20,8 @@ import functools
 import sonnet as snt
 import tensorflow.compat.v1 as tf
 
-EdgeSet = collections.namedtuple('EdgeSet', ['name', 'features', 'senders',
-                                             'receivers'])
-MultiGraph = collections.namedtuple('Graph', ['node_features', 'edge_sets'])
+EdgeSet = collections.namedtuple('EdgeSet', ['name', 'features', 'senders', 'receivers'])
+MultiGraph = collections.namedtuple('Graph', ['node_features','sender_features','reciever_features', 'edge_sets'])
 
 
 class GraphNetBlock(snt.AbstractModule):
@@ -32,6 +31,14 @@ class GraphNetBlock(snt.AbstractModule):
     super(GraphNetBlock, self).__init__(name=name)
     self._model_fn = model_fn
 
+  def _make_mlp(self, output_size, layer_norm=True):
+    """Builds an MLP."""
+    widths = [self._latent_size] * self._num_layers + [output_size]
+    network = snt.nets.MLP(widths, activate_final=False)
+    if layer_norm:
+      network = snt.Sequential([network, snt.LayerNorm()])
+    return network
+
   def _update_edge_features(self, node_features, edge_set):
     """Aggregrates node features, and applies edge function."""
     sender_features = tf.gather(node_features, edge_set.senders)
@@ -39,6 +46,10 @@ class GraphNetBlock(snt.AbstractModule):
     features = [sender_features, receiver_features, edge_set.features]
     with tf.variable_scope(edge_set.name+'_edge_fn'):
       return self._model_fn()(tf.concat(features, axis=-1))
+
+  def _calculate_score(self, node_features, sender_features, reciever_features, edge_set):
+    """Caluculates attention score."""
+    
 
   def _update_node_features(self, node_features, edge_sets):
     """Aggregrates edge features, and applies node function."""
@@ -99,11 +110,13 @@ class EncodeProcessDecode(snt.AbstractModule):
     """Encodes node and edge features into latent features."""
     with tf.variable_scope('encoder'):
       node_latents = self._make_mlp(self._latent_size)(graph.node_features)
+      reciever_latents = self._make_mlp(self._latent_size)(node_latents)
+      sender_latents = self._make_mlp(self._latent_size)(node_latents)
       new_edges_sets = []
       for edge_set in graph.edge_sets:
-        latent = self._make_mlp(self._latent_size)(edge_set.features)
-        new_edges_sets.append(edge_set._replace(features=latent))
-    return MultiGraph(node_latents, new_edges_sets)
+        #latent = self._make_mlp(self._latent_size)(edge_set.features)
+        new_edges_sets.append(edge_set._replace(features=[]))
+    return MultiGraph(node_latents, reciever_latents, sender_latents, new_edges_sets)
 
   def _decoder(self, graph):
     """Decodes node features from graph."""
