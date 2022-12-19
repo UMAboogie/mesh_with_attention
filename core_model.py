@@ -27,19 +27,21 @@ MultiGraph = collections.namedtuple('Graph', ['node_features','sender_features',
 class GraphNetBlock(snt.AbstractModule):
   """Multi-Edge Interaction Network with residual connections."""
 
-  def __init__(self, model_fn, name='GraphNetBlock'):
+  def __init__(self, model_fn, latent_size, num_head, name='GraphNetBlock'):
     super(GraphNetBlock, self).__init__(name=name)
     self._model_fn = model_fn
+    self.latent_size = latent_size
+    self.num_head = num_head
 
-  def _make_ffn(self, latent_size, num_layers, output_size, layer_norm=True):
+  def _make_ffn(self, num_layers, with_bias=False, layer_norm=True):
     """Builds an FFN."""
-    widths = [latent_size] * num_layers + [output_size]
-    network = snt.nets.MLP(widths, activate_final=False)
+    widths = [self.latent_size] * num_layers + [self.latent_size]
+    network = snt.nets.MLP(widths, activate_final=False, with_bias=with_bias)
     if layer_norm:
       network = snt.Sequential([network, snt.LayerNorm()])
     return network
 
-  def _update_edge_features(self, node_features, edge_set):
+  def _update_edge_features0(self, node_features, edge_set):
     """Aggregrates node features, and applies edge function."""
     sender_features = tf.gather(node_features, edge_set.senders)
     receiver_features = tf.gather(node_features, edge_set.receivers)
@@ -47,13 +49,47 @@ class GraphNetBlock(snt.AbstractModule):
     with tf.variable_scope(edge_set.name+'_edge_fn'):
       return self._model_fn()(tf.concat(features, axis=-1))
 
-  def _calculate_score(self, node_features, sender_features, reciever_features, edge_set):
+  def _update_edge_features(self, node_features, sender_features, reciever_features, edge_set):
     """Caluculates attention score."""
-    with tf.variable_scope():
-      return
-    
+    #linear projection of features 
+    proj_r = self._make_ffn(num_layers=1)(reciever_features)
+    proj_s = self._make_ffn(num_layers=1)(sender_features)
+    proj_m = self._make_ffn(num_layers=1)(node_features)
 
-  def _update_node_features(self, node_features, edge_sets):
+    #update edge features 
+    next_reciever_features = proj_r + proj_m
+    next_sender_features = proj_s + proj_m
+
+    #residual connection
+    next_reciever_features += reciever_features
+    next_sender_features += sender_features
+
+    return next_reciever_features, next_sender_features
+
+    
+  def _update_node_features(self, node_features, sender_features, reciever_features, edge_sets):
+    num_nodes = node_features.shape[0]
+    latent_size = node_features.shape[1]
+
+    proj_q = self._make_ffn(latent_size=128, num_layers=1, output_size=128, with_bias=True)(node_features)
+
+    # N*latent_size -> N*num_head*(latent_size // num_head)
+    proj_q_head = tf.reshape(proj_q, [num_nodes, self.num_head, latent_size // self.num_head])
+    reciever_features_head = tf.reshape(reciever_features, [num_nodes, self.num_head, latent_size // self.num_head])
+    sender_features_head = tf.reshape(sender_features, [num_nodes, self.num_head, latent_size // self.num_head])
+
+    # N*num_head*(latent_size // num_head) -> num_head*N*(latent_size // num_head)
+    proj_q_head = tf.transpose(proj_q_head, perm=[1,0,2])
+    reciever_features_head = tf.transpose(reciever_features_head, perm=[1,0,2])
+    sender_features_head = tf.transpose(sender_features_head, perm=[1,0,2])
+
+    QR = tf.einsum('ijk,ijk->ij', proj_q_head, reciever_features_head)
+    QR = tf.reshape(QR, [QR.shape[0], QR.shape[1], 1])
+    score_before_sm = tf.tile(QR, [1,1,num_nodes]) + tf.einsum('ijk,ilk->ijl', proj_q_head, sender_features_head)
+
+    return
+
+  def _update_node_features0(self, node_features, edge_sets):
     """Aggregrates edge features, and applies node function."""
     num_nodes = tf.shape(node_features)[0]
     features = [node_features]
