@@ -21,7 +21,7 @@ import os
 
 import tensorflow.compat.v1 as tf
 
-from meshgraphnets.common import NodeType
+from mesh_with_attention.common import NodeType
 
 
 def _parse(proto, meta):

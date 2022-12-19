@@ -31,9 +31,9 @@ class GraphNetBlock(snt.AbstractModule):
     super(GraphNetBlock, self).__init__(name=name)
     self._model_fn = model_fn
 
-  def _make_mlp(self, output_size, layer_norm=True):
-    """Builds an MLP."""
-    widths = [self._latent_size] * self._num_layers + [output_size]
+  def _make_ffn(self, latent_size, num_layers, output_size, layer_norm=True):
+    """Builds an FFN."""
+    widths = [latent_size] * num_layers + [output_size]
     network = snt.nets.MLP(widths, activate_final=False)
     if layer_norm:
       network = snt.Sequential([network, snt.LayerNorm()])
@@ -49,6 +49,8 @@ class GraphNetBlock(snt.AbstractModule):
 
   def _calculate_score(self, node_features, sender_features, reciever_features, edge_set):
     """Caluculates attention score."""
+    with tf.variable_scope():
+      return
     
 
   def _update_node_features(self, node_features, edge_sets):

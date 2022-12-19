@@ -18,9 +18,9 @@
 import sonnet as snt
 import tensorflow.compat.v1 as tf
 
-from meshgraphnets import common
-from meshgraphnets import core_model
-from meshgraphnets import normalization
+from mesh_with_attention import common
+from mesh_with_attention import core_model
+from mesh_with_attention import normalization
 
 
 class Model(snt.AbstractModule):

@@ -21,11 +21,6 @@ from absl import flags
 from absl import logging
 import numpy as np
 import tensorflow.compat.v1 as tf
-from mesh_with_attention import cfd_eval
-from mesh_with_attention import cfd_model
-from mesh_with_attention import cloth_eval
-from mesh_with_attention import cloth_model
-from mesh_with_attention import core_model
 from mesh_with_attention import dataset
 
 
@@ -45,9 +40,9 @@ flags.DEFINE_integer('num_training_steps', int(10e6), 'No. of training steps')
 
 PARAMETERS = {
     'cfd': dict(noise=0.02, gamma=1.0, field='velocity', history=False,
-                size=2, batch=2, model=cfd_model, evaluator=cfd_eval),
+                size=2, batch=2),
     'cloth': dict(noise=0.003, gamma=0.1, field='world_pos', history=True,
-                  size=3, batch=1, model=cloth_model, evaluator=cloth_eval)
+                  size=3, batch=1)
 }
 
 
@@ -115,16 +110,19 @@ def main(argv):
   tf.enable_resource_variables()
   tf.disable_eager_execution()
   params = PARAMETERS[FLAGS.model]
-  learned_model = core_model.EncodeProcessDecode(
-      output_size=params['size'],
-      latent_size=128,
-      num_layers=2,
-      message_passing_steps=15)
-  model = params['model'].Model(learned_model)
-  if FLAGS.mode == 'train':
-    learner(model, params)
-  elif FLAGS.mode == 'eval':
-    evaluator(model, params)
+  ds = dataset.load_dataset(FLAGS.dataset_dir, 'valid')
+  ds = dataset.add_targets(ds, [params['field']], add_history=params['history'])
+  inputs = tf.data.make_one_shot_iterator(ds).get_next()
+  print("dataset")
+  min_no = 10000
+  max_no = -1
+  for cell in inputs['cells'][0].eval(session=tf.Session()):
+    for no in cell:
+      if no < min_no:
+        min_no = no
+      if no > max_no:
+        max_no = no 
+  print(min_no,max_no)
 
 if __name__ == '__main__':
   app.run(main)
