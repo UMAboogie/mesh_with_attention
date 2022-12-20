@@ -34,8 +34,10 @@ class Model(snt.AbstractModule):
           size=3, name='output_normalizer')
       self._node_normalizer = normalization.Normalizer(
           size=3+common.NodeType.SIZE, name='node_normalizer')
+      """
       self._edge_normalizer = normalization.Normalizer(
           size=7, name='edge_normalizer')  # 2D coord + 3D coord + 2*length = 7
+      """
 
   def _build_graph(self, inputs, is_training):
     """Builds input graph."""
@@ -46,6 +48,7 @@ class Model(snt.AbstractModule):
 
     # construct graph edges
     senders, receivers = common.triangles_to_edges(inputs['cells'])
+    """
     relative_world_pos = (tf.gather(inputs['world_pos'], senders) -
                           tf.gather(inputs['world_pos'], receivers))
     relative_mesh_pos = (tf.gather(inputs['mesh_pos'], senders) -
@@ -55,12 +58,17 @@ class Model(snt.AbstractModule):
         tf.norm(relative_world_pos, axis=-1, keepdims=True),
         relative_mesh_pos,
         tf.norm(relative_mesh_pos, axis=-1, keepdims=True)], axis=-1)
-
     mesh_edges = core_model.EdgeSet(
         name='mesh_edges',
         features=self._edge_normalizer(edge_features, is_training),
         receivers=receivers,
         senders=senders)
+    """
+    mesh_edges = core_model.EdgeSet(
+        name='mesh_edges',
+        receivers=receivers,
+        senders=senders)
+
     return core_model.MultiGraph(
         node_features=self._node_normalizer(node_features, is_training),
         edge_sets=[mesh_edges])

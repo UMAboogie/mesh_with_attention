@@ -19,38 +19,41 @@ import collections
 import functools
 import sonnet as snt
 import tensorflow.compat.v1 as tf
+import numpy as np
 
-EdgeSet = collections.namedtuple('EdgeSet', ['name', 'features', 'senders', 'receivers'])
+EdgeSet = collections.namedtuple('EdgeSet', ['name', 'senders', 'receivers'])
 MultiGraph = collections.namedtuple('Graph', ['node_features','sender_features','reciever_features', 'edge_sets'])
 
 
 class GraphNetBlock(snt.AbstractModule):
   """Multi-Edge Interaction Network with residual connections."""
 
-  def __init__(self, model_fn, latent_size, num_head, name='GraphNetBlock'):
+  def __init__(self, model_fn, latent_size, num_head, adj, name='GraphNetBlock'):
     super(GraphNetBlock, self).__init__(name=name)
     self._model_fn = model_fn
-    self.latent_size = latent_size
-    self.num_head = num_head
+    self._latent_size = latent_size
+    self._num_head = num_head
+    self._adj = adj
 
-  def _make_ffn(self, num_layers, with_bias=False, layer_norm=True):
+  def _make_ffn(self, num_layers, with_bias=False, layer_norm=True, activate_final=False):
     """Builds an FFN."""
     widths = [self.latent_size] * num_layers + [self.latent_size]
-    network = snt.nets.MLP(widths, activate_final=False, with_bias=with_bias)
+    network = snt.nets.MLP(widths, activate_final=activate_final, with_bias=with_bias)
     if layer_norm:
       network = snt.Sequential([network, snt.LayerNorm()])
     return network
 
+  """
   def _update_edge_features0(self, node_features, edge_set):
-    """Aggregrates node features, and applies edge function."""
     sender_features = tf.gather(node_features, edge_set.senders)
     receiver_features = tf.gather(node_features, edge_set.receivers)
     features = [sender_features, receiver_features, edge_set.features]
     with tf.variable_scope(edge_set.name+'_edge_fn'):
       return self._model_fn()(tf.concat(features, axis=-1))
+  """
 
-  def _update_edge_features(self, node_features, sender_features, reciever_features, edge_set):
-    """Caluculates attention score."""
+    
+  def _update_all_features(self, node_features, reciever_features, sender_features):
     #linear projection of features 
     proj_r = self._make_ffn(num_layers=1)(reciever_features)
     proj_s = self._make_ffn(num_layers=1)(sender_features)
@@ -64,33 +67,48 @@ class GraphNetBlock(snt.AbstractModule):
     next_reciever_features += reciever_features
     next_sender_features += sender_features
 
-    return next_reciever_features, next_sender_features
+    num_nodes = node_features.get_shape[0]
+    latent_size = node_features.get_shape[1]
+    assert latent_size % self.num_head == 0
 
-    
-  def _update_node_features(self, node_features, sender_features, reciever_features, edge_sets):
-    num_nodes = node_features.shape[0]
-    latent_size = node_features.shape[1]
-
-    proj_q = self._make_ffn(latent_size=128, num_layers=1, output_size=128, with_bias=True)(node_features)
+    proj_q = self._make_ffn(num_layers=1, with_bias=False, activate_final=True)(node_features)
 
     # N*latent_size -> N*num_head*(latent_size // num_head)
-    proj_q_head = tf.reshape(proj_q, [num_nodes, self.num_head, latent_size // self.num_head])
-    reciever_features_head = tf.reshape(reciever_features, [num_nodes, self.num_head, latent_size // self.num_head])
-    sender_features_head = tf.reshape(sender_features, [num_nodes, self.num_head, latent_size // self.num_head])
+    proj_q_head = tf.reshape(proj_q, [num_nodes, self._num_head, latent_size // self._num_head])
+    reciever_features_head = tf.reshape(next_reciever_features, [num_nodes, self._num_head, latent_size // self._num_head])
+    sender_features_head = tf.reshape(next_sender_features, [num_nodes, self._num_head, latent_size // self._num_head])
 
     # N*num_head*(latent_size // num_head) -> num_head*N*(latent_size // num_head)
-    proj_q_head = tf.transpose(proj_q_head, perm=[1,0,2])
-    reciever_features_head = tf.transpose(reciever_features_head, perm=[1,0,2])
-    sender_features_head = tf.transpose(sender_features_head, perm=[1,0,2])
+    head_proj_q = tf.transpose(proj_q_head, perm=[1,0,2])
+    head_reciever_features = tf.transpose(reciever_features_head, perm=[1,0,2])
+    head_sender_features = tf.transpose(sender_features_head, perm=[1,0,2])
 
-    QR = tf.einsum('ijk,ijk->ij', proj_q_head, reciever_features_head)
-    QR = tf.reshape(QR, [QR.shape[0], QR.shape[1], 1])
-    score_before_sm = tf.tile(QR, [1,1,num_nodes]) + tf.einsum('ijk,ilk->ijl', proj_q_head, sender_features_head)
+    QR = tf.einsum('ijk,ijk->ij', head_proj_q, head_reciever_features)
+    QR_3d = tf.expand_dims(QR, 2)
+    attn_before_sm = tf.tile(QR_3d, [1, 1, num_nodes]) + tf.einsum('ijk,ilk->ijl', head_proj_q, head_sender_features)
 
-    return
+    mask = tf.expand_dims(self._adj, 0)
+    mask_head = tf.tile(mask, [self._num_head, 1, 1])
+    attn_before_sm_with_adj = (1 - tf.cast(mask_head, tf.float32))*(-np.inf) + tf.cast(mask_head, tf.float32)*attn_before_sm
+    scaled_attn_before_sm = attn_before_sm_with_adj / tf.math.sqrt(latent_size // self._num_head)
+    attn_score = tf.math.softmax(scaled_attn_before_sm, dim=2)
+    attn_dropout = tf.nn.dropout(attn_score)
+    head_aggr_sender = tf.einsum('ijk,ikl->ijl', attn_dropout, head_sender_features)
+    aggr_sender_head = tf.transpose(head_aggr_sender, perm=[1,0,2])
+    aggr_sender = tf.reshape(aggr_sender_head, [num_nodes, latent_size])
+    next_node_features = next_reciever_features + aggr_sender
 
+    proj_node = self._make_ffn(num_layers=1, with_bias=True, activate_final=True)(next_node_features)
+    proj_r = self._make_ffn(num_layers=1, with_bias=True, activate_final=True)(next_reciever_features)
+    proj_s = self._make_ffn(num_layers=1, with_bias=True, activate_final=True)(next_sender_features)
+
+    return proj_node, proj_r, proj_s
+
+
+
+  """
   def _update_node_features0(self, node_features, edge_sets):
-    """Aggregrates edge features, and applies node function."""
+    Aggregrates edge features, and applies node function.
     num_nodes = tf.shape(node_features)[0]
     features = [node_features]
     for edge_set in edge_sets:
@@ -99,26 +117,17 @@ class GraphNetBlock(snt.AbstractModule):
                                                    num_nodes))
     with tf.variable_scope('node_fn'):
       return self._model_fn()(tf.concat(features, axis=-1))
+  """
 
   def _build(self, graph):
     """Applies GraphNetBlock and returns updated MultiGraph."""
-
-    # apply edge functions
-    new_edge_sets = []
-    for edge_set in graph.edge_sets:
-      updated_features = self._update_edge_features(graph.node_features,
-                                                    edge_set)
-      new_edge_sets.append(edge_set._replace(features=updated_features))
-
     # apply node function
-    new_node_features = self._update_node_features(graph.node_features,
-                                                   new_edge_sets)
+    new_node_features, new_reciever_features, new_sender_features = self._update_all_features(graph.node_features, graph.reciever_features, graph.sender_features)
 
     # add residual connections
     new_node_features += graph.node_features
-    new_edge_sets = [es._replace(features=es.features + old_es.features)
-                     for es, old_es in zip(new_edge_sets, graph.edge_sets)]
-    return MultiGraph(new_node_features, new_edge_sets)
+
+    return MultiGraph(new_node_features, new_reciever_features, new_sender_features, graph.edge_sets)
 
 
 class EncodeProcessDecode(snt.AbstractModule):
@@ -129,12 +138,14 @@ class EncodeProcessDecode(snt.AbstractModule):
                latent_size,
                num_layers,
                message_passing_steps,
+               num_head,
                name='EncodeProcessDecode'):
     super(EncodeProcessDecode, self).__init__(name=name)
     self._latent_size = latent_size
     self._output_size = output_size
     self._num_layers = num_layers
     self._message_passing_steps = message_passing_steps
+    self._num_head = num_head
 
   def _make_mlp(self, output_size, layer_norm=True):
     """Builds an MLP."""
@@ -144,6 +155,15 @@ class EncodeProcessDecode(snt.AbstractModule):
       network = snt.Sequential([network, snt.LayerNorm()])
     return network
 
+  def _make_adj(self, graph):
+    #note that a_ij = 1 (if edge j->i exists)
+    num_nodes = graph.node_features.get_shape[0]
+    for edge_set in graph.edge_sets:
+      edge_list = tf.stack([edge_set.senders, edge_set.receivers], axis=1)
+      A = tf.tensor_scatter_nd_update(tf.zeros((num_nodes, num_nodes), dtype=tf.int64), edge_list, tf.repeat(tf.cast(1, tf.int64), tf.shape(edge_list)[0]))
+    return A
+
+
   def _encoder(self, graph):
     """Encodes node and edge features into latent features."""
     with tf.variable_scope('encoder'):
@@ -151,9 +171,11 @@ class EncodeProcessDecode(snt.AbstractModule):
       reciever_latents = self._make_mlp(self._latent_size)(node_latents)
       sender_latents = self._make_mlp(self._latent_size)(node_latents)
       new_edges_sets = []
+      """
       for edge_set in graph.edge_sets:
-        #latent = self._make_mlp(self._latent_size)(edge_set.features)
+        latent = self._make_mlp(self._latent_size)(edge_set.features)
         new_edges_sets.append(edge_set._replace(features=[]))
+      """
     return MultiGraph(node_latents, reciever_latents, sender_latents, new_edges_sets)
 
   def _decoder(self, graph):
@@ -166,6 +188,7 @@ class EncodeProcessDecode(snt.AbstractModule):
     """Encodes and processes a multigraph, and returns node features."""
     model_fn = functools.partial(self._make_mlp, output_size=self._latent_size)
     latent_graph = self._encoder(graph)
+    adj = self._make_adj(latent_graph)
     for _ in range(self._message_passing_steps):
-      latent_graph = GraphNetBlock(model_fn)(latent_graph)
+      latent_graph = GraphNetBlock(model_fn, self._latent_size, self._num_head, adj)(latent_graph)
     return self._decoder(latent_graph)
