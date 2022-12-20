@@ -71,6 +71,8 @@ class Model(snt.AbstractModule):
 
     return core_model.MultiGraph(
         node_features=self._node_normalizer(node_features, is_training),
+        reciever_features=[],
+        sender_features=[],
         edge_sets=[mesh_edges])
 
   def _build(self, inputs):

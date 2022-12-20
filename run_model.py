@@ -119,7 +119,7 @@ def main(argv):
       output_size=params['size'],
       latent_size=128,
       num_layers=2,
-      message_passing_steps=15,
+      message_passing_steps=5,
       num_head=1)
   model = params['model'].Model(learned_model)
   if FLAGS.mode == 'train':

@@ -4,7 +4,7 @@ from absl import flags
 from absl import logging
 import numpy as np
 import tensorflow.compat.v1 as tf
-
+import sonnet as snt
 
 
 tf.enable_resource_variables()
@@ -36,6 +36,8 @@ A = tf.tensor_scatter_nd_update(
     edge_list,
     tf.repeat(tf.cast(1, tf.int64), tf.shape(edge_list)[0]),
 )
+
+mlp = snt.nets.MLP([20,20],with_bias=True)
 
 mask = tf.expand_dims(A, 0)
 mask_head = tf.tile(mask, [3, 1, 1])

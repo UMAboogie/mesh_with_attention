@@ -22,7 +22,7 @@ import tensorflow.compat.v1 as tf
 import numpy as np
 
 EdgeSet = collections.namedtuple('EdgeSet', ['name', 'senders', 'receivers'])
-MultiGraph = collections.namedtuple('Graph', ['node_features','sender_features','reciever_features', 'edge_sets'])
+MultiGraph = collections.namedtuple('Graph', ['node_features','reciever_features', 'sender_features', 'edge_sets'])
 
 
 class GraphNetBlock(snt.AbstractModule):
@@ -35,10 +35,10 @@ class GraphNetBlock(snt.AbstractModule):
     self._num_head = num_head
     self._adj = adj
 
-  def _make_ffn(self, num_layers, with_bias=False, layer_norm=True, activate_final=False):
+  def _make_ffn(self, num_layers, layer_norm=True, activate_final=False):
     """Builds an FFN."""
-    widths = [self.latent_size] * num_layers + [self.latent_size]
-    network = snt.nets.MLP(widths, activate_final=activate_final, with_bias=with_bias)
+    widths = [self._latent_size] * num_layers + [self._latent_size]
+    network = snt.nets.MLP(widths, activate_final=activate_final)
     if layer_norm:
       network = snt.Sequential([network, snt.LayerNorm()])
     return network
@@ -67,11 +67,11 @@ class GraphNetBlock(snt.AbstractModule):
     next_reciever_features += reciever_features
     next_sender_features += sender_features
 
-    num_nodes = node_features.get_shape[0]
-    latent_size = node_features.get_shape[1]
-    assert latent_size % self.num_head == 0
+    num_nodes = node_features.get_shape()[0]
+    latent_size = node_features.get_shape()[1]
+    assert latent_size % self._num_head == 0
 
-    proj_q = self._make_ffn(num_layers=1, with_bias=False, activate_final=True)(node_features)
+    proj_q = self._make_ffn(num_layers=1, activate_final=True)(node_features)
 
     # N*latent_size -> N*num_head*(latent_size // num_head)
     proj_q_head = tf.reshape(proj_q, [num_nodes, self._num_head, latent_size // self._num_head])
@@ -90,17 +90,17 @@ class GraphNetBlock(snt.AbstractModule):
     mask = tf.expand_dims(self._adj, 0)
     mask_head = tf.tile(mask, [self._num_head, 1, 1])
     attn_before_sm_with_adj = (1 - tf.cast(mask_head, tf.float32))*(-np.inf) + tf.cast(mask_head, tf.float32)*attn_before_sm
-    scaled_attn_before_sm = attn_before_sm_with_adj / tf.math.sqrt(latent_size // self._num_head)
+    scaled_attn_before_sm = attn_before_sm_with_adj / tf.math.sqrt(tf.cast(latent_size // self._num_head, tf.float32))
     attn_score = tf.math.softmax(scaled_attn_before_sm, dim=2)
-    attn_dropout = tf.nn.dropout(attn_score)
+    attn_dropout = tf.nn.dropout(attn_score, rate=0.2)
     head_aggr_sender = tf.einsum('ijk,ikl->ijl', attn_dropout, head_sender_features)
     aggr_sender_head = tf.transpose(head_aggr_sender, perm=[1,0,2])
     aggr_sender = tf.reshape(aggr_sender_head, [num_nodes, latent_size])
     next_node_features = next_reciever_features + aggr_sender
 
-    proj_node = self._make_ffn(num_layers=1, with_bias=True, activate_final=True)(next_node_features)
-    proj_r = self._make_ffn(num_layers=1, with_bias=True, activate_final=True)(next_reciever_features)
-    proj_s = self._make_ffn(num_layers=1, with_bias=True, activate_final=True)(next_sender_features)
+    proj_node = self._make_ffn(num_layers=1, activate_final=True)(next_node_features)
+    proj_r = self._make_ffn(num_layers=1, activate_final=True)(next_reciever_features)
+    proj_s = self._make_ffn(num_layers=1, activate_final=True)(next_sender_features)
 
     return proj_node, proj_r, proj_s
 
@@ -157,7 +157,7 @@ class EncodeProcessDecode(snt.AbstractModule):
 
   def _make_adj(self, graph):
     #note that a_ij = 1 (if edge j->i exists)
-    num_nodes = graph.node_features.get_shape[0]
+    num_nodes = graph.node_features.get_shape()[0]
     for edge_set in graph.edge_sets:
       edge_list = tf.stack([edge_set.senders, edge_set.receivers], axis=1)
       A = tf.tensor_scatter_nd_update(tf.zeros((num_nodes, num_nodes), dtype=tf.int64), edge_list, tf.repeat(tf.cast(1, tf.int64), tf.shape(edge_list)[0]))
@@ -176,7 +176,7 @@ class EncodeProcessDecode(snt.AbstractModule):
         latent = self._make_mlp(self._latent_size)(edge_set.features)
         new_edges_sets.append(edge_set._replace(features=[]))
       """
-    return MultiGraph(node_latents, reciever_latents, sender_latents, new_edges_sets)
+    return MultiGraph(node_latents, reciever_latents, sender_latents, graph.edge_sets)
 
   def _decoder(self, graph):
     """Decodes node features from graph."""
