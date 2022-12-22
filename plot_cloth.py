@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string('rollout_path', None, 'Path to rollout pickle file')
+flags.DEFINE_string('gif_name', None, 'Gif name to save animation')
 
 
 def main(unused_argv):
@@ -58,9 +59,10 @@ def main(unused_argv):
     ax.set_title('Trajectory %d Step %d' % (traj, step))
     return fig,
 
-  _ = animation.FuncAnimation(fig, animate, frames=num_frames, interval=100)
-  plt.show(block=True)
-
+  ani = animation.FuncAnimation(fig, animate, frames=num_frames, interval=100)
+  if FLAGS.gif_name != None:
+    ani.save(FLAGS.gif_name, writer="imagemagick")
+  #plt.show(block=True)
 
 if __name__ == '__main__':
   app.run(main)
