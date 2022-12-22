@@ -112,8 +112,14 @@ def main(argv):
   params = PARAMETERS[FLAGS.model]
   ds = dataset.load_dataset(FLAGS.dataset_dir, 'valid')
   ds = dataset.add_targets(ds, [params['field']], add_history=params['history'])
-  inputs = tf.data.make_one_shot_iterator(ds).get_next()
+  ds = dataset.split_and_preprocess(ds, noise_field=params['field'],
+                                    noise_scale=params['noise'],
+                                    noise_gamma=params['gamma'])
+  inputs = tf.data.make_one_shot_iterator(ds)
+  iter = inputs.get_next()
+
   print("dataset")
+  """
   min_no = 10000
   max_no = -1
   for cell in inputs['cells'][0].eval(session=tf.Session()):
@@ -123,6 +129,16 @@ def main(argv):
       if no > max_no:
         max_no = no 
   print(min_no,max_no)
+  """
+  #print(inputs['node_type'].eval(session=tf.Session()))
+  #print(ds)
+
+  with tf.Session() as sess:
+    i = 0
+    while i < 100000:
+      sess.run(iter)
+      print(i)
+      i += 1
 
 if __name__ == '__main__':
   app.run(main)
